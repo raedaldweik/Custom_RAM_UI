@@ -75,12 +75,73 @@ def _logon_url() -> str:
     return f"{base}/SASLogon/oauth/token"
 
 
-def _store_tokens(body: dict) -> None:
+def _store_tokens(body: dict, *, token_url: str | None = None,
+                  client_id: str | None = None, auth_style: str = "body") -> None:
     _token_cache["token"] = body["access_token"]
     # Refresh shortly before actual expiry
     _token_cache["expires_at"] = time.time() + int(body.get("expires_in", 300)) - 30
     if body.get("refresh_token"):
         _token_cache["refresh_token"] = body["refresh_token"]
+    if token_url:
+        _token_cache["token_url"] = token_url
+        _token_cache["client_id"] = client_id
+        _token_cache["auth_style"] = auth_style  # "basic" (UAA/SASLogon) or "body" (Keycloak public)
+
+
+# ─── Sign-in flow detection ──────────────────────────────────────────
+# Standalone RAM ships Keycloak (device code flow); full SAS Viya uses
+# SASLogon (authorization code flow with the sas.cli public client).
+_flow_cache: dict[str, str | None] = {"flow": None}
+
+
+def _viya_logon_base() -> str:
+    explicit = os.getenv("SAS_LOGON_URL")
+    if explicit:
+        return explicit.split("/oauth/")[0]
+    return RAM_API_URL.split("/SASRetrievalAgentManager")[0] + "/SASLogon"
+
+
+async def detect_signin_flow() -> str:
+    """Return "device" (Keycloak) or "code" (Viya SASLogon paste-the-code)."""
+    env = os.getenv("RAM_AUTH_FLOW")
+    if env in ("device", "code"):
+        return env
+    if _flow_cache["flow"]:
+        return _flow_cache["flow"]
+    if not RAM_API_URL:
+        return "device"
+    realm = os.getenv("RAM_REALM", "sas-iot")
+    base = RAM_API_URL.split("/api/")[0]
+    try:
+        async with httpx.AsyncClient(verify=VERIFY_SSL, timeout=httpx.Timeout(8.0)) as client:
+            r = await client.get(f"{base}/auth/realms/{realm}/.well-known/openid-configuration")
+        _flow_cache["flow"] = "device" if r.status_code == 200 else "code"
+    except Exception:
+        return "device"  # don't cache on network errors — retry next time
+    return _flow_cache["flow"]
+
+
+# ─── Viya SASLogon authorization code flow (sas.cli public client) ───
+# Visiting /SASLogon/oauth/authorize?client_id=sas.cli&response_type=code
+# displays an authorization code after login (SSO included); the user
+# pastes it into the UI and we exchange it for tokens here.
+def viya_authorize_url() -> str:
+    client_id = os.getenv("SAS_AUTH_CLIENT_ID", "sas.cli")
+    return f"{_viya_logon_base()}/oauth/authorize?client_id={client_id}&response_type=code"
+
+
+async def viya_code_exchange(code: str) -> dict:
+    client_id = os.getenv("SAS_AUTH_CLIENT_ID", "sas.cli")
+    client_secret = os.getenv("SAS_AUTH_CLIENT_SECRET", "")
+    token_url = f"{_viya_logon_base()}/oauth/token"
+    async with httpx.AsyncClient(verify=VERIFY_SSL, timeout=TIMEOUT) as client:
+        r = await client.post(token_url,
+                              data={"grant_type": "authorization_code", "code": code.strip()},
+                              auth=(client_id, client_secret))
+    if r.status_code != 200:
+        raise RamError(r.status_code, f"Sign-in failed — SASLogon said: {r.text[:300]}")
+    _store_tokens(r.json(), token_url=token_url, client_id=client_id, auth_style="basic")
+    return {"ok": True}
 
 
 # ─── Device code flow (standalone RAM / Keycloak public client) ──────
@@ -133,23 +194,26 @@ async def device_poll() -> dict:
             return {"pending": True, "slowDown": error == "slow_down"}
         _device_state.clear()
         raise RamError(r.status_code, body.get("error_description") or error or r.text[:300])
-    _store_tokens(body)
+    _store_tokens(body, token_url=f"{_oidc_base()}/token", client_id=client_id, auth_style="body")
     _device_state.clear()
     return {"ok": True}
 
 
 async def _refresh_token_grant() -> str | None:
-    """Renew the access token with the refresh token from the device flow."""
+    """Renew the access token with the stored refresh token (any sign-in flow)."""
     refresh = _token_cache.get("refresh_token")
-    if not refresh:
+    token_url = _token_cache.get("token_url")
+    if not refresh or not token_url:
         return None
-    client_id = os.getenv("RAM_CLIENT_ID", "sas-ram-api")
+    client_id = _token_cache.get("client_id") or os.getenv("RAM_CLIENT_ID", "sas-ram-api")
+    data = {"grant_type": "refresh_token", "refresh_token": refresh}
+    auth = None
+    if _token_cache.get("auth_style") == "basic":
+        auth = (client_id, os.getenv("SAS_AUTH_CLIENT_SECRET", ""))
+    else:
+        data["client_id"] = client_id
     async with httpx.AsyncClient(verify=VERIFY_SSL, timeout=TIMEOUT) as client:
-        r = await client.post(f"{_oidc_base()}/token", data={
-            "grant_type": "refresh_token",
-            "refresh_token": refresh,
-            "client_id": client_id,
-        })
+        r = await client.post(token_url, data=data, auth=auth)
     if r.status_code != 200:
         # Refresh token expired/revoked — user must sign in again
         _token_cache["refresh_token"] = None
@@ -171,14 +235,13 @@ async def _fetch_oauth_token() -> str:
     else:
         data = {"grant_type": "client_credentials"}
 
-    # Public clients (no secret) — common with Keycloak — expect client_id in the
-    # form body; confidential clients use HTTP Basic auth.
-    auth = (client_id, client_secret) if client_secret else None
-    if not client_secret:
-        data["client_id"] = client_id
-
+    # SASLogon (UAA) wants client auth via HTTP Basic (empty secret is fine for
+    # public clients like sas.cli); Keycloak public clients want client_id in
+    # the form body. Try Basic first, fall back to the body style.
     async with httpx.AsyncClient(verify=VERIFY_SSL, timeout=TIMEOUT) as client:
-        r = await client.post(_logon_url(), data=data, auth=auth)
+        r = await client.post(_logon_url(), data=data, auth=(client_id, client_secret))
+        if r.status_code in (400, 401) and not client_secret:
+            r = await client.post(_logon_url(), data={**data, "client_id": client_id})
     if r.status_code != 200:
         raise RamError(r.status_code, f"Token request failed: {r.text[:300]}")
     body = r.json()
@@ -311,6 +374,16 @@ def status() -> dict:
         "auth": auth,
         "authenticated": authenticated,
     }
+
+
+async def status_async() -> dict:
+    """status() plus the interactive sign-in flow ("device" or "code")."""
+    s = status()
+    if s.get("auth") == "device":
+        s["signinFlow"] = await detect_signin_flow()
+        if s["signinFlow"] == "code":
+            s["authorizeUrl"] = viya_authorize_url() if RAM_API_URL else None
+    return s
 
 
 # ─── In-memory mock (RAM_MOCK=true) ──────────────────────────────────
