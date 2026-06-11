@@ -14,6 +14,8 @@ async function req(path, opts = {}) {
 }
 
 export const getHealth = () => req('/api/health');
+export const startDeviceAuth = () => req('/api/auth/device/start', { method: 'POST' });
+export const pollDeviceAuth = () => req('/api/auth/device/poll', { method: 'POST' });
 export const getAgents = () => req('/api/agents');
 export const getCollections = () => req('/api/collections');
 export const getSessions = () => req('/api/sessions');

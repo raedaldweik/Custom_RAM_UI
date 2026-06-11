@@ -51,17 +51,34 @@ npm run dev          # http://localhost:5173, proxies /api to :8000
 
 ## Connecting to a real RAM deployment
 
-Copy `backend/.env.example` to `backend/.env` and set:
+### Standalone RAM (Keycloak auth) — zero configuration
+
+Copy `backend/.env.example` to `backend/.env` and set just:
+
+```bash
+RAM_API_URL=https://<ram-host>/SASRetrievalAgentManager/api/v1
+RAM_VERIFY_SSL=false   # only if the cert is self-signed
+```
+
+Start the app and click **Sign in** in the header. The app runs the OAuth
+device code flow (with PKCE) against RAM's pre-configured public client
+(`sas-ram-api`): it shows a short code, you open the verification page, log in
+with your RAM user, and enter the code. The backend keeps the session alive
+with the refresh token. Override `RAM_CLIENT_ID` / `RAM_REALM` if your
+deployment differs from the defaults (`sas-ram-api` / `sas-iot`).
+
+### Full SAS Viya, or non-interactive auth
 
 | Variable | Purpose |
 |---|---|
-| `RAM_API_URL` | `https://<viya-host>/SASRetrievalAgentManager/api/v1` |
-| `RAM_TOKEN` | Option A: a static bearer token from SASLogon (quick demos) |
+| `RAM_API_URL` | `https://<host>/SASRetrievalAgentManager/api/v1` |
+| `RAM_TOKEN` | Option A: a static bearer token (quick demos) |
 | `SAS_CLIENT_ID` / `SAS_CLIENT_SECRET` | Option B: OAuth client — backend fetches & refreshes tokens itself |
 | `SAS_USERNAME` / `SAS_PASSWORD` | Optional: use the password grant to act as a named user |
-| `RAM_VERIFY_SSL` | `false` for self-signed Viya certificates |
+| `SAS_LOGON_URL` | Token endpoint — defaults to Viya's SASLogon; for standalone RAM use the Keycloak realm's token endpoint |
+| `RAM_VERIFY_SSL` | `false` for self-signed certificates |
 
-Getting a quick token for option A:
+Getting a quick token for option A on full Viya:
 
 ```bash
 curl -k https://<viya-host>/SASLogon/oauth/token \

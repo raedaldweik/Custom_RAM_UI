@@ -32,6 +32,16 @@ def health():
     return ram.status()
 
 
+@router.post("/auth/device/start")
+async def auth_device_start():
+    return await _wrap(ram.device_start())
+
+
+@router.post("/auth/device/poll")
+async def auth_device_poll():
+    return await _wrap(ram.device_poll())
+
+
 @router.get("/agents")
 async def agents():
     return await _wrap(ram.list_agents())

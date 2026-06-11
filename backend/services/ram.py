@@ -6,19 +6,29 @@ The browser never talks to RAM directly — this backend proxies every call,
 which keeps the bearer token server-side and avoids CORS issues.
 
 Auth options (checked in order):
-    RAM_TOKEN            — static bearer token (simplest; expires per Viya policy)
-    SAS_CLIENT_ID/SECRET — OAuth client_credentials grant against SASLogon
+    RAM_TOKEN            — static bearer token (simplest; expires per policy)
+    SAS_CLIENT_ID/SECRET — OAuth client_credentials grant
                            (add SAS_USERNAME/SAS_PASSWORD for the password grant)
+    device code flow     — default for standalone RAM (Keycloak): no configuration
+                           needed; the UI's "Sign in" button drives the flow against
+                           the pre-configured public client (RAM_CLIENT_ID, default
+                           "sas-ram-api") with PKCE, and the backend keeps the
+                           session alive with the refresh token.
 
 Other env vars:
-    RAM_API_URL     — base URL, e.g. https://viya.example.com/SASRetrievalAgentManager/api/v1
-    SAS_LOGON_URL   — override SASLogon token endpoint (default derived from RAM_API_URL)
-    RAM_VERIFY_SSL  — "false" to skip TLS verification (self-signed Viya certs)
-    RAM_MOCK        — "true" to run against an in-memory mock (UI demo without Viya)
+    RAM_API_URL     — base URL, e.g. https://host/SASRetrievalAgentManager/api/v1
+    SAS_LOGON_URL   — override the OAuth token endpoint (default derived from RAM_API_URL)
+    RAM_CLIENT_ID   — public client for the device flow (default "sas-ram-api")
+    RAM_REALM       — Keycloak realm for standalone RAM (default "sas-iot")
+    RAM_VERIFY_SSL  — "false" to skip TLS verification (self-signed certs)
+    RAM_MOCK        — "true" to run against an in-memory mock (UI demo without RAM)
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
+import secrets
 import time
 import uuid
 from typing import Any
@@ -40,16 +50,112 @@ class RamError(Exception):
 
 
 # ─── Token management ────────────────────────────────────────────────
-_token_cache: dict[str, Any] = {"token": None, "expires_at": 0.0}
+_token_cache: dict[str, Any] = {"token": None, "expires_at": 0.0, "refresh_token": None}
+_device_state: dict[str, str] = {}  # in-flight device authorization (verifier + device_code)
+
+
+def _oidc_base() -> str:
+    """Keycloak OpenID Connect base for standalone RAM, e.g.
+    https://host/SASRetrievalAgentManager/auth/realms/sas-iot/protocol/openid-connect"""
+    explicit = os.getenv("SAS_LOGON_URL")
+    if explicit and "/protocol/openid-connect" in explicit:
+        return explicit.split("/protocol/openid-connect")[0] + "/protocol/openid-connect"
+    base = RAM_API_URL.split("/api/")[0]  # strip /api/v1
+    realm = os.getenv("RAM_REALM", "sas-iot")
+    return f"{base}/auth/realms/{realm}/protocol/openid-connect"
 
 
 def _logon_url() -> str:
     explicit = os.getenv("SAS_LOGON_URL")
     if explicit:
         return explicit
-    # Derive https://host/SASLogon/oauth/token from the RAM URL
+    # Derive https://host/SASLogon/oauth/token from the RAM URL (full Viya);
+    # standalone RAM deployments go through _oidc_base() instead.
     base = RAM_API_URL.split("/SASRetrievalAgentManager")[0]
     return f"{base}/SASLogon/oauth/token"
+
+
+def _store_tokens(body: dict) -> None:
+    _token_cache["token"] = body["access_token"]
+    # Refresh shortly before actual expiry
+    _token_cache["expires_at"] = time.time() + int(body.get("expires_in", 300)) - 30
+    if body.get("refresh_token"):
+        _token_cache["refresh_token"] = body["refresh_token"]
+
+
+# ─── Device code flow (standalone RAM / Keycloak public client) ──────
+async def device_start() -> dict:
+    """Begin a device authorization (PKCE). Returns the code/URL the user needs."""
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("utf-8").rstrip("=")
+    digest = hashlib.sha256(verifier.encode("utf-8")).digest()
+    challenge = base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
+
+    client_id = os.getenv("RAM_CLIENT_ID", "sas-ram-api")
+    async with httpx.AsyncClient(verify=VERIFY_SSL, timeout=TIMEOUT) as client:
+        r = await client.post(f"{_oidc_base()}/auth/device", data={
+            "client_id": client_id,
+            "scope": "openid",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+        })
+    if r.status_code != 200:
+        raise RamError(r.status_code, f"Device authorization failed: {r.text[:300]}")
+    body = r.json()
+    _device_state.update({"verifier": verifier, "device_code": body["device_code"]})
+    return {
+        "userCode": body.get("user_code"),
+        "verificationUri": body.get("verification_uri"),
+        "verificationUriComplete": body.get("verification_uri_complete"),
+        "expiresIn": body.get("expires_in"),
+        "interval": body.get("interval", 5),
+    }
+
+
+async def device_poll() -> dict:
+    """Poll Keycloak until the user approves the device authorization."""
+    if not _device_state.get("device_code"):
+        raise RamError(400, "No device authorization in progress — start a sign-in first.")
+    client_id = os.getenv("RAM_CLIENT_ID", "sas-ram-api")
+    async with httpx.AsyncClient(verify=VERIFY_SSL, timeout=TIMEOUT) as client:
+        r = await client.post(f"{_oidc_base()}/token", data={
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            "device_code": _device_state["device_code"],
+            "code_verifier": _device_state["verifier"],
+            "client_id": client_id,
+        })
+    try:
+        body = r.json()
+    except Exception:
+        raise RamError(r.status_code, r.text[:300])
+    if r.status_code != 200:
+        error = body.get("error", "")
+        if error in ("authorization_pending", "slow_down"):
+            return {"pending": True, "slowDown": error == "slow_down"}
+        _device_state.clear()
+        raise RamError(r.status_code, body.get("error_description") or error or r.text[:300])
+    _store_tokens(body)
+    _device_state.clear()
+    return {"ok": True}
+
+
+async def _refresh_token_grant() -> str | None:
+    """Renew the access token with the refresh token from the device flow."""
+    refresh = _token_cache.get("refresh_token")
+    if not refresh:
+        return None
+    client_id = os.getenv("RAM_CLIENT_ID", "sas-ram-api")
+    async with httpx.AsyncClient(verify=VERIFY_SSL, timeout=TIMEOUT) as client:
+        r = await client.post(f"{_oidc_base()}/token", data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh,
+            "client_id": client_id,
+        })
+    if r.status_code != 200:
+        # Refresh token expired/revoked — user must sign in again
+        _token_cache["refresh_token"] = None
+        return None
+    _store_tokens(r.json())
+    return _token_cache["token"]
 
 
 async def _fetch_oauth_token() -> str:
@@ -88,7 +194,12 @@ async def _get_token(force_refresh: bool = False) -> str:
         return static
     if not force_refresh and _token_cache["token"] and time.time() < _token_cache["expires_at"]:
         return _token_cache["token"]
-    return await _fetch_oauth_token()
+    refreshed = await _refresh_token_grant()
+    if refreshed:
+        return refreshed
+    if os.getenv("SAS_CLIENT_ID"):
+        return await _fetch_oauth_token()
+    raise RamError(401, "Not signed in — click “Sign in” in the header to authenticate with RAM.")
 
 
 # ─── HTTP helper ─────────────────────────────────────────────────────
@@ -175,13 +286,30 @@ def _normalize_query(q: dict) -> dict:
 
 def status() -> dict:
     if MOCK:
-        return {"status": "ok", "mode": "mock", "ramUrl": "(in-memory mock)"}
-    auth = "static-token" if os.getenv("RAM_TOKEN") else ("oauth" if os.getenv("SAS_CLIENT_ID") else "unconfigured")
+        return {"status": "ok", "mode": "mock", "ramUrl": "(in-memory mock)", "authenticated": True}
+    if os.getenv("RAM_TOKEN"):
+        auth, authenticated = "static-token", True
+    elif os.getenv("SAS_CLIENT_ID"):
+        auth, authenticated = "oauth", True
+    else:
+        # Standalone RAM: device sign-in through the UI
+        auth = "device"
+        authenticated = bool(
+            _token_cache.get("refresh_token")
+            or (_token_cache["token"] and time.time() < _token_cache["expires_at"])
+        )
+    if not RAM_API_URL:
+        state = "unconfigured"
+    elif auth == "device" and not authenticated:
+        state = "signin_required"
+    else:
+        state = "ok"
     return {
-        "status": "ok" if RAM_API_URL and auth != "unconfigured" else "unconfigured",
+        "status": state,
         "mode": "live",
         "ramUrl": RAM_API_URL or "(not set)",
         "auth": auth,
+        "authenticated": authenticated,
     }
 
 
