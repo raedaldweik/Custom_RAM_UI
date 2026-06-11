@@ -65,10 +65,16 @@ async def _fetch_oauth_token() -> str:
     else:
         data = {"grant_type": "client_credentials"}
 
+    # Public clients (no secret) — common with Keycloak — expect client_id in the
+    # form body; confidential clients use HTTP Basic auth.
+    auth = (client_id, client_secret) if client_secret else None
+    if not client_secret:
+        data["client_id"] = client_id
+
     async with httpx.AsyncClient(verify=VERIFY_SSL, timeout=TIMEOUT) as client:
-        r = await client.post(_logon_url(), data=data, auth=(client_id, client_secret))
+        r = await client.post(_logon_url(), data=data, auth=auth)
     if r.status_code != 200:
-        raise RamError(r.status_code, f"SASLogon token request failed: {r.text[:300]}")
+        raise RamError(r.status_code, f"Token request failed: {r.text[:300]}")
     body = r.json()
     _token_cache["token"] = body["access_token"]
     # Refresh a minute before actual expiry
