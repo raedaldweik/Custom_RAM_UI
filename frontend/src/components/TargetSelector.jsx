@@ -25,8 +25,8 @@ export default function TargetSelector({ agents, collections, target, onChange, 
         const isActive = target && target.type === type && target.id === item.id;
         return (
           <button key={item.id} onClick={() => pick({ ...item, type })}
-            className="w-full text-left px-3 py-2 transition-all hover:bg-[rgba(0,114,206,0.06)]"
-            style={isActive ? { background: 'rgba(0,114,206,0.10)', borderLeft: '3px solid var(--gold)' } : { borderLeft: '3px solid transparent' }}>
+            className="w-full text-left px-3 py-2 transition-all hover:bg-[rgba(0,111,207,0.06)]"
+            style={isActive ? { background: 'rgba(0,111,207,0.10)', borderLeft: '3px solid var(--gold)' } : { borderLeft: '3px solid transparent' }}>
             <p className="text-[12px] font-semibold truncate" style={{ color: isActive ? 'var(--gold-lo)' : 'var(--text)' }}>{item.name}</p>
             {item.description && (
               <p className="text-[10.5px] truncate" style={{ color: 'var(--text-dim)' }}>{item.description}</p>
@@ -43,7 +43,7 @@ export default function TargetSelector({ agents, collections, target, onChange, 
         className="flex items-center gap-2 pl-3 pr-2.5 py-1.5 rounded-lg text-[12px] font-semibold transition-all"
         style={{
           background: 'rgba(255,255,255,0.65)', backdropFilter: 'blur(12px)',
-          border: '1px solid rgba(0,114,206,0.22)', color: 'var(--text)', minWidth: 220,
+          border: '1px solid rgba(0,111,207,0.22)', color: 'var(--text)', minWidth: 220,
         }}>
         {/* status dot */}
         <span className="w-2 h-2 rounded-full shrink-0"
@@ -56,7 +56,7 @@ export default function TargetSelector({ agents, collections, target, onChange, 
         </span>
         {selected && (
           <span className="text-[8.5px] font-bold tracking-wider uppercase px-1.5 py-0.5 rounded shrink-0"
-            style={{ background: 'rgba(0,114,206,0.10)', color: 'var(--gold)' }}>
+            style={{ background: 'rgba(0,111,207,0.10)', color: 'var(--gold)' }}>
             {selected.type}
           </span>
         )}
@@ -70,7 +70,7 @@ export default function TargetSelector({ agents, collections, target, onChange, 
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute right-0 top-full mt-1 rounded-xl shadow-xl overflow-hidden z-50 w-[300px] max-h-[340px] overflow-y-auto animate-fade-up"
-            style={{ background: 'rgba(255,255,255,0.97)', border: '1px solid rgba(0,114,206,0.2)', backdropFilter: 'blur(20px)' }}>
+            style={{ background: 'rgba(255,255,255,0.97)', border: '1px solid rgba(0,111,207,0.2)', backdropFilter: 'blur(20px)' }}>
             {error ? (
               <p className="px-3 py-3 text-[11.5px]" style={{ color: 'var(--red)' }}>{error}</p>
             ) : all.length === 0 ? (

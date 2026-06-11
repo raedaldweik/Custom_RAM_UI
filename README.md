@@ -1,9 +1,11 @@
-# SAS RAM Chat UI
+# American Express Smart Assistant
 
-A custom chatbot UI for **SAS Retrieval Agent Manager (RAM)**, styled identically to the
-Health repository's Population Health AI assistant. Pick a published agent (or query a
-collection directly) from the dropdown in the chat header and converse with it — answers,
-retrieved source passages, agent tool calls, and token usage all come from the RAM REST API.
+A custom chatbot UI for **SAS Retrieval Agent Manager (RAM)**, themed for American Express
+and styled identically to the reports repository's Smart Monitoring Assistant (glass panels,
+atmospheric bokeh backdrop, Manrope type — re-skinned in Amex blue #006FCF). Pick a published
+agent (or query a collection directly) from the dropdown in the chat header and converse with
+it — answers, retrieved source passages, agent tool calls, and token usage all come from the
+RAM REST API.
 
 ## What it does
 
@@ -24,7 +26,7 @@ retrieved source passages, agent tool calls, and token usage all come from the R
 ## Architecture
 
 ```
-Browser (React + Vite + Tailwind — same look as Health repo)
+Browser (React + Vite + Tailwind — same look as the reports chatbot, Amex theme)
    │  /api/*  (same-origin in prod, Vite proxy in dev)
    ▼
 FastAPI backend (token management + thin proxy)
