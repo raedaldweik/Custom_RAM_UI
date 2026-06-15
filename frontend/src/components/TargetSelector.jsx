@@ -2,19 +2,31 @@ import { useState } from 'react';
 
 /**
  * Dropdown to pick what the chat talks to: a published RAM agent,
- * or (optionally) query a collection directly.
+ * or (optionally) query a collection directly — including by raw ID,
+ * for collections that don't appear in the list endpoint.
  */
 export default function TargetSelector({ agents, collections, target, onChange, loading, error }) {
   const [open, setOpen] = useState(false);
+  const [byId, setById] = useState('');
 
   const all = [
     ...agents.map(a => ({ ...a, type: 'agent' })),
     ...collections.map(c => ({ ...c, type: 'collection' })),
   ];
-  const selected = target ? all.find(x => x.type === target.type && x.id === target.id) : null;
+  // Fall back to the target itself when it isn't in the fetched list
+  // (e.g. a collection targeted directly by ID).
+  const selected = target ? (all.find(x => x.type === target.type && x.id === target.id) || target) : null;
 
   const pick = (item) => {
     onChange({ type: item.type, id: item.id, name: item.name });
+    setOpen(false);
+  };
+
+  const useById = () => {
+    const id = byId.trim();
+    if (!id) return;
+    onChange({ type: 'collection', id, name: `Collection ${id.slice(0, 8)}…` });
+    setById('');
     setOpen(false);
   };
 
@@ -73,14 +85,37 @@ export default function TargetSelector({ agents, collections, target, onChange, 
             style={{ background: 'rgba(255,255,255,0.97)', border: '1px solid rgba(0,111,207,0.2)', backdropFilter: 'blur(20px)' }}>
             {error ? (
               <p className="px-3 py-3 text-[11.5px]" style={{ color: 'var(--red)' }}>{error}</p>
-            ) : all.length === 0 ? (
-              <p className="px-3 py-3 text-[11.5px]" style={{ color: 'var(--text-dim)' }}>
-                No agents or collections published on this RAM environment.
-              </p>
             ) : (
               <div className="pb-1.5">
-                <Group label="Agents" items={agents} type="agent" />
-                <Group label="Collections (direct retrieval)" items={collections} type="collection" />
+                {all.length === 0 ? (
+                  <p className="px-3 py-3 text-[11.5px]" style={{ color: 'var(--text-dim)' }}>
+                    No agents or collections published on this RAM environment.
+                  </p>
+                ) : (
+                  <>
+                    <Group label="Agents" items={agents} type="agent" />
+                    <Group label="Collections (direct retrieval)" items={collections} type="collection" />
+                  </>
+                )}
+
+                {/* Target a collection by raw ID (for collections not in the list) */}
+                <div className="px-3 pt-2.5 pb-2 mt-1" style={{ borderTop: '1px solid rgba(0,111,207,0.12)' }}>
+                  <p className="pb-1.5 text-[9px] font-bold tracking-widest uppercase" style={{ color: 'var(--text-dim)' }}>
+                    Use a collection by ID
+                  </p>
+                  <div className="flex gap-1.5">
+                    <input value={byId} onChange={e => setById(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') useById(); }}
+                      placeholder="Paste collection ID…"
+                      className="flex-1 rounded-md px-2 py-1.5 text-[11px] outline-none"
+                      style={{ background: 'rgba(255,255,255,0.7)', border: '1px solid rgba(0,111,207,0.25)', color: 'var(--text)' }} />
+                    <button onClick={useById} disabled={!byId.trim()}
+                      className="px-2.5 rounded-md text-[11px] font-bold text-white disabled:opacity-40"
+                      style={{ background: 'var(--gold-grad)' }}>
+                      Use
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
           </div>
