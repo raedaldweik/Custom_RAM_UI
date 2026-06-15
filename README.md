@@ -26,6 +26,11 @@ RAM REST API.
 ## Architecture
 
 ```
+Attachments: the 📎 paperclip extracts text from uploads and sends it inline with
+your question (RAM's query API is text-only). Text PDFs, DOCX, and text files are
+read locally for free; scanned PDFs and images (photos of IDs, passports, etc.) are
+read with Claude vision OCR — set `ANTHROPIC_API_KEY` in `backend/.env` to enable it.
+
 Browser (React + Vite + Tailwind — same look as the reports chatbot, Amex theme)
    │  /api/*  (same-origin in prod, Vite proxy in dev)
    ▼

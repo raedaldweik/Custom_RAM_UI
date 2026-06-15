@@ -26,6 +26,7 @@ export default function ChatPage() {
   // Ad-hoc attachment: text is extracted server-side and inlined into the query
   const [attachment, setAttachment] = useState(null);
   const [attaching, setAttaching] = useState(false);
+  const [attachingOcr, setAttachingOcr] = useState(false);
   const [attachError, setAttachError] = useState(null);
 
   const inputRef = useRef(null);
@@ -37,6 +38,9 @@ export default function ChatPage() {
     e.target.value = ''; // allow re-selecting the same file
     if (!file) return;
     setAttachError(null);
+    // Images and scanned PDFs go through OCR, which takes longer — hint at it.
+    const isImage = /^image\//.test(file.type) || /\.(png|jpe?g|gif|bmp|webp|tiff?)$/i.test(file.name);
+    setAttachingOcr(isImage || /\.pdf$/i.test(file.name));
     setAttaching(true);
     try {
       const doc = await extractAttachment(file);
@@ -45,6 +49,7 @@ export default function ChatPage() {
       setAttachError(err.message);
     }
     setAttaching(false);
+    setAttachingOcr(false);
   };
 
   useEffect(() => {
@@ -259,6 +264,7 @@ export default function ChatPage() {
                 style={{ background: 'rgba(0,111,207,0.07)', border: '1px solid rgba(0,111,207,0.20)', color: 'var(--text-dim)' }}>
                 <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--gold)' }} />
                 Reading document…
+                {attachingOcr && <span style={{ color: 'var(--text-faint)' }}>extracting with OCR, this can take a few seconds</span>}
               </div>
             ) : (
               <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11.5px] font-semibold"
@@ -267,6 +273,10 @@ export default function ChatPage() {
                   <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>
                 </svg>
                 {attachment.name}
+                {attachment.ocr && (
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wide"
+                    style={{ background: 'var(--gold)', color: 'white' }}>OCR</span>
+                )}
                 <span className="font-normal" style={{ color: 'var(--text-dim)' }}>
                   {attachment.truncated ? `first ${Math.round(attachment.text.length / 1000)}k chars` : `${(attachment.chars / 1000).toFixed(1)}k chars`}
                   {' '}· sent with your next question
@@ -283,9 +293,9 @@ export default function ChatPage() {
             style={{ background: 'var(--glass-strong)', backdropFilter: 'blur(12px)' }}>
             {/* Attach document */}
             <input ref={fileRef} type="file" className="hidden" onChange={pickFile}
-              accept=".pdf,.docx,.txt,.md,.csv,.json,.log,.xml,.html,.yaml,.yml,.sas,.sql,.py" />
+              accept=".pdf,.docx,.txt,.md,.csv,.json,.log,.xml,.html,.yaml,.yml,.sas,.sql,.py,.png,.jpg,.jpeg,.gif,.bmp,.webp,.tif,.tiff,image/*" />
             <button onClick={() => fileRef.current?.click()} disabled={attaching}
-              title="Attach a document (PDF, DOCX, TXT, CSV…) — its text is sent with your question"
+              title="Attach a document or photo — PDFs, Office/text files, and scanned IDs/passports (read with OCR). Sent with your question."
               className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-all hover:bg-[rgba(0,111,207,0.08)] disabled:opacity-40"
               style={{ color: attachment ? 'var(--gold)' : 'var(--text-dim)' }}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">

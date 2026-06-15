@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
 from services import ram
+from services import ocr
 
 router = APIRouter(prefix="/api", tags=["ram"])
 
@@ -69,12 +70,14 @@ async def auth_viya_code(body: AuthCode):
 # ─── Attachments (ad-hoc documents, inlined into the query) ─────────
 @router.post("/extract")
 async def extract(file: UploadFile = File(...)):
-    """Extract plain text from an uploaded document so it can be sent
-    inline with a question. RAM's query API is text-only, so this is how
-    ad-hoc files reach the agent without indexing them into a collection."""
+    """Extract text from an uploaded document so it can be sent inline with a
+    question. RAM's query API is text-only, so this is how ad-hoc files reach the
+    agent without indexing them into a collection. Scanned PDFs and images
+    (e.g. photos of IDs and passports) are read with Claude vision OCR."""
     data = await file.read()
     name = file.filename or "attachment"
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    via_ocr = False
 
     if ext == "pdf":
         try:
@@ -84,9 +87,16 @@ async def extract(file: UploadFile = File(...)):
         except Exception as e:
             raise HTTPException(status_code=422, detail=f"Could not read PDF: {e}")
         if not text.strip():
-            raise HTTPException(status_code=422, detail=(
-                "This PDF contains no extractable text (it looks scanned). "
-                "OCR isn't available, so the assistant can't read it."))
+            # Scanned PDF (no text layer) — fall back to vision OCR.
+            if not ocr.ocr_available():
+                raise HTTPException(status_code=422, detail=(
+                    "This PDF is scanned (no text layer). Enable OCR by setting "
+                    "ANTHROPIC_API_KEY in backend/.env, then re-upload."))
+            try:
+                text = await ocr.ocr_document(data, name, "pdf")
+            except ocr.OcrError as e:
+                raise HTTPException(status_code=422, detail=str(e))
+            via_ocr = True
     elif ext == "docx":
         try:
             from docx import Document
@@ -99,15 +109,23 @@ async def extract(file: UploadFile = File(...)):
             raise HTTPException(status_code=422, detail=f"Could not read DOCX: {e}")
     elif ext in ("txt", "md", "csv", "json", "log", "xml", "html", "yaml", "yml", "sas", "sql", "py"):
         text = data.decode("utf-8", errors="replace")
-    elif ext in ("png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff"):
-        raise HTTPException(status_code=415, detail=(
-            "Images can't be read — RAM's query API is text-only and there is no "
-            "OCR/vision step. Export the content as a PDF or text file instead."))
+    elif ocr.is_image_ext(ext):
+        # Photos / scans of IDs, passports, etc. — read with vision OCR.
+        if not ocr.ocr_available():
+            raise HTTPException(status_code=415, detail=(
+                "Reading images requires OCR. Set ANTHROPIC_API_KEY in "
+                "backend/.env, then re-upload."))
+        try:
+            text = await ocr.ocr_document(data, name, ext)
+        except ocr.OcrError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        via_ocr = True
     else:
         raise HTTPException(status_code=415, detail=f"Unsupported file type: .{ext or '?'}")
 
     truncated = len(text) > MAX_ATTACH_CHARS
-    return {"name": name, "text": text[:MAX_ATTACH_CHARS], "chars": len(text), "truncated": truncated}
+    return {"name": name, "text": text[:MAX_ATTACH_CHARS], "chars": len(text),
+            "truncated": truncated, "ocr": via_ocr}
 
 
 # ─── RAM proxy ───────────────────────────────────────────────────────
